@@ -30,6 +30,8 @@ void init_multitasking() {
     // 2. Clear out our dedicated static register tracking block
     memset(&kernel_initial_regs, 0, sizeof(struct InterruptRegisters));
 
+    memset(main_task->file_descriptors, 0, sizeof(main_task->file_descriptors));
+
     main_task->is_alive = 1; 
     main_task->kernel_stack_ptr = 0;
     // 3. Point the task card's regs pointer to this safe memory area
@@ -100,6 +102,8 @@ Task* spawn_task(void (*func_ptr)()) {
     // Point saved registers block to our custom forged frame
     new_task->regs = (struct InterruptRegisters*)esp;
     
+    memset(new_task->file_descriptors, 0, sizeof(new_task->file_descriptors));
+
     // Thread task inside our circular carousel chain
     new_task->next = ready_queue->next;
     ready_queue->next = new_task;
@@ -191,24 +195,11 @@ Task* spawn_user_task(void (*func_ptr)()) {
     new_task->regs = (struct InterruptRegisters*)esp;
     new_task->is_alive = 1;
 
+    memset(new_task->file_descriptors, 0, sizeof(new_task->file_descriptors));
+
     new_task->next = current_task->next;
     current_task->next = new_task;
 
     return new_task;
 }
 
-
-// Called by your assembly interrupt handler on every timer tick
-// uint32_t schedule(uint32_t current_esp) {
-//     if (current_task == 0) return current_esp;
-
-//     // 1. Save the current CPU state passed from the assembly handler into the running task
-//     current_task->regs = (struct InterruptRegisters*)current_esp;
-
-//     // 2. Rotate the circular linked list carousel to the next ready task
-//     current_task = current_task->next;
-
-//     // 3. Hand back the new task's stack pointer so assembly can load its registers
-//     // We must return a pointer to where the InterruptRegisters struct begins on its stack
-//     return (uint32_t)&(current_task->regs);
-// }

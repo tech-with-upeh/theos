@@ -3,6 +3,10 @@
 
 #include "stdint.h"
 #include "util.h" // Gives us access to your exact struct InterruptRegisters
+#define MAX_PROCESS_FILES 16
+
+// Forward declaration of our filesystem node
+struct vfs_node;
 
 typedef struct Task {
     uint32_t id;                             // Unique Process ID (PID)
@@ -13,6 +17,7 @@ typedef struct Task {
     // Pointers for memory cleanup tracking
     uint32_t* kernel_stack_ptr; 
     struct Task* next;                  // Pointer to the next task (Circular Loop)
+    struct vfs_node* file_descriptors[MAX_PROCESS_FILES];
 } Task;
 
 // Public system hooks
