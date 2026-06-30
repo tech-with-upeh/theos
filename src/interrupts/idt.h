@@ -15,7 +15,7 @@ struct idt_ptr_struct{
 void initIdt();
 void setIdtGate(uint8_t num, uint32_t base, uint16_t sel, uint8_t flags);
 
-void isr_handler(struct InterruptRegisters* regs);
+uint32_t isr_handler(struct InterruptRegisters* regs);
 
 void irq_install_handler (int irq, void (*handler)(struct InterruptRegisters *r));
 

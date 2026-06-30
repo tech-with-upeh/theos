@@ -9,6 +9,18 @@ void memset(void *dest, char val, uint32_t count){
 
 }
 
+void* memcpy(void* dest, const void* src, uint32_t count) {
+    char* dst_ptr = (char*)dest;
+    const char* src_ptr = (const char*)src;
+
+    for (uint32_t i = 0; i < count; i++) {
+        dst_ptr[i] = src_ptr[i];
+    }
+
+    return dest;
+}
+
+
 void outPortB(uint16_t Port, uint8_t Value){
     asm volatile ("outb %1, %0" : : "dN" (Port), "a" (Value));
 }

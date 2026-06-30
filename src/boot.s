@@ -58,25 +58,19 @@ section .data
 align 4096
 global initial_page_dir
 initial_page_dir:
-    ; 1. Identity map the first 4MB (so the CPU doesn't crash when paging turns on)
-    DD 10000011b
-    TIMES 768-1 DD 0      ; Fill up to index 768 (0xC0000000)
+    DD 10000011b            ; Index 0: identity map first 4MB
 
-    ; 2. Map 0xC0000000 to 0xC0FFFFFF (Indices 768 to 771)
+    DD (8 << 22) | 10000111b  ; Index 1: user space at 32MB
+
+    TIMES 768-2 DD 0
+
+    ; Kernel space (0xC0000000) — keep PSE here, kernel code is read-only after boot
     DD (0 << 22) | 10000011b
     DD (1 << 22) | 10000011b
     DD (2 << 22) | 10000011b
     DD (3 << 22) | 10000011b
-
-    ; 3. Fill the gap between 0xC1000000 and 0xD0000000 (60 empty entries)
     TIMES 60 DD 0
 
-    ; 4. Map 0xD0000000 to 0xD0FFFFFF for your Heap (Indices 832 to 835)
-    ; This maps the heap space directly to physical memory blocks 4, 5, 6, and 7
-    DD (4 << 22) | 10000011b
-    DD (5 << 22) | 10000011b
-    DD (6 << 22) | 10000011b
-    DD (7 << 22) | 10000011b
-
-    ; 5. Clear out the rest of the page directory (192 entries left)
-    TIMES 192 DD 0
+    ; Heap (0xD0000000) — REMOVE PSE entries, leave unmapped
+    ; memMapPage will properly set up page tables here via changeHeapSize
+    TIMES 196 DD 0          ; was 4 PSE entries + 192 zeros, now all zeros

@@ -113,60 +113,60 @@ isr_common_stub:
     STI
     IRET
 
+; extern irq_handler
+; irq_common_stub:
+;     pusha
+;     mov eax, ds
+;     PUSH eax
+;     MOV eax, cr2
+;     PUSH eax
+
+;     MOV ax, 0x10
+;     MOV ds, ax
+;     MOV es, ax
+;     MOV fs, ax
+;     MOV gs, ax
+
+;     PUSH esp
+;     CALL irq_handler
+;     MOV esp, eax    ; Updates CPU stack pointer to the next task's stack frame!
+
+;     ADD esp, 4      ; Clears cr2 and ds arguments
+;     POP ebx
+;     MOV ds, bx
+;     MOV es, bx
+;     MOV fs, bx
+;     MOV gs, bx
+
+;     POPA
+;     ADD esp, 8      ; Clears int_no and err_code
+;     STI
+;     IRET
+
 extern irq_handler
 irq_common_stub:
-    pusha
+    ; --- 1. PUSH CONTEXT (Matches struct from bottom to top) ---
+    pusha           ; Pushes edi, esi, ebp, esp, ebx, edx, ecx, eax
     mov eax, ds
-    PUSH eax
-    MOV eax, cr2
-    PUSH eax
+    push eax        ; Pushes ds
+    mov eax, cr2    ; Read faulting address
+    push eax        ; Pushes cr2
 
-    MOV ax, 0x10
-    MOV ds, ax
-    MOV es, ax
-    MOV fs, ax
-    MOV gs, ax
+    ; --- 2. EXECUTE HANDLER ---
+    push esp        ; Pass pointer to InterruptRegisters struct as C argument
+    call irq_handler
+    mov esp, eax    ; Switch to the returned task's stack frame!
+                    ; ESP is now pointing exactly at the 'cr2' field
 
-    PUSH esp
-    CALL irq_handler
-    MOV esp, eax    ; Updates CPU stack pointer to the next task's stack frame!
+    ; --- 3. POP CONTEXT (Matches struct from top to bottom) ---
+    pop eax         ; Pops 'cr2' into eax (clearing it)
+    pop ebx         ; Pops 'ds' value directly into ebx
+    mov ds, bx      ; Restore segment registers to target task's space
+    mov es, bx
+    mov fs, bx
+    mov gs, bx
 
-    ADD esp, 4      ; Clears cr2 and ds arguments
-    POP ebx
-    MOV ds, bx
-    MOV es, bx
-    MOV fs, bx
-    MOV gs, bx
-
-    POPA
-    ADD esp, 8      ; Clears int_no and err_code
-    STI
-    IRET
-
-;;if shit goes bad revert
-    ; pusha
-    ; mov eax,ds
-    ; PUSH eax
-    ; MOV eax, cr2
-    ; PUSH eax
-
-    ; MOV ax, 0x10
-    ; MOV ds, ax
-    ; MOV es, ax
-    ; MOV fs, ax
-    ; MOV gs, ax
-
-    ; PUSH esp
-    ; CALL irq_handler
-
-    ; ADD esp, 8
-    ; POP ebx
-    ; MOV ds, bx
-    ; MOV es, bx
-    ; MOV fs, bx
-    ; MOV gs, bx
-
-    ; POPA
-    ; ADD esp, 8
-    ; STI
-    ; IRET
+    popa            ; Pops edi, esi, ebp, esp, ebx, edx, ecx, eax cleanly
+    add esp, 8      ; Clears 'int_no' and 'err_code' pushed by the ISR stub
+    sti
+    iret

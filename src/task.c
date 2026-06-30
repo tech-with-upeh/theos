@@ -9,17 +9,7 @@ Task* ready_queue = 0;
 Task* current_task = 0;
 uint32_t next_pid = 1;
 
-// Initialize multitasking by turning the core kernel into Task 0
-// void init_multitasking() {
-//     Task* main_task = (Task*)kmalloc(sizeof(Task));
-//     main_task->id = 0;
-//     main_task->page_directory = (uint32_t)memGetCurrentPageDir();
-    
-//     main_task->next = main_task; // Circle points back to itself
 
-//     current_task = main_task;
-//     ready_queue = main_task;
-// }
 // Keep a safe, static global structure instance for Task 0's initial save target
 static struct InterruptRegisters kernel_initial_regs;
 
@@ -32,12 +22,16 @@ void init_multitasking() {
     }
     
     main_task->id = 0;
-    main_task->page_directory = (uint32_t)memGetCurrentPageDir();
+    //main_task->page_directory = (uint32_t)memGetCurrentPageDir();
+    // Force Task 0 to track the physical address of the kernel boot directory
+    main_task->page_directory = (uint32_t)&initial_page_dir - 0xC0000000;
     main_task->next = main_task; // Circle points back to itself
 
     // 2. Clear out our dedicated static register tracking block
     memset(&kernel_initial_regs, 0, sizeof(struct InterruptRegisters));
 
+    main_task->is_alive = 1; 
+    main_task->kernel_stack_ptr = 0;
     // 3. Point the task card's regs pointer to this safe memory area
     main_task->regs = &kernel_initial_regs;
 
@@ -62,7 +56,7 @@ Task* spawn_task(void (*func_ptr)()) {
     }
     
     // 1. Allocate a standard, safe 8KB stack block
-    uint32_t stack_size = 4096;
+    uint32_t stack_size = 8192;
     uint32_t* stack = (uint32_t*)kmalloc(stack_size);
     
     // 2. CRITICAL MATH FIX: 
@@ -113,81 +107,95 @@ Task* spawn_task(void (*func_ptr)()) {
     return new_task;
 }
 
-
-
-// Create a new task that executes a specific C function
-// Task* spawn_task(void (*func_ptr)()) {
-//         print("spawning task\n");
-   
-//     // 1. Allocate space for the task control block card using your working kmalloc
+// Task* spawn_user_task(void (*func_ptr)()) {
+//     // 1. Allocate the task card structure card
 //     Task* new_task = (Task*)kmalloc(sizeof(Task));
 //     if (new_task == 0) {
-//     print("CRITICAL ERROR: kmalloc returned NULL pointer inside spawn_task!\n");
-//     while(1); // Freeze here so you can read the error message on screen
-// }
+//         print("CRITICAL ERROR: User Task allocation failed!\n");
+//         while(1);
+//     }
     
-//     print("spawning task:malloc\n");
-//     // 2. Allocate a dedicated 4KB stack for this specific task's math and local variables
-//     uint32_t* stack = (uint32_t*)kmalloc(4096);
+//     // 2. Allocate the Ring 0 Interrupt Stack boundary
+//     uint32_t* kernel_stack = (uint32_t*)kmalloc(8192);
+//     uint32_t* esp = (uint32_t*)((uint32_t)kernel_stack + 8192);
     
-//     // 3. Stacks grow downward in x86 memory! Point to the very top edge of the 4KB block
-//     uint32_t* esp = (uint32_t*)((uint32_t)stack + 4096);
-    
-//     // 4. Manually construct the exact stack frame that an 'iret' or pop sequence expects.
-//     // This MUST match the layout of your 'struct InterruptRegisters' from bottom to top!
-    
-//     *(--esp) = 0x10;                // ss
-//     *(--esp) = (uint32_t)esp;       // useresp
-//     *(--esp) = 0x0202;              // eflags
-//     *(--esp) = 0x08;                // csm
-//     *(--esp) = (uint32_t)func_ptr;  // eip
+//     uint32_t raw_user_esp = 0x007FFFF0; 
+
+//     // 3. Build the hardware execution context backwards
+//     *(--esp) = 0x23;                // ss
+//     *(--esp) = raw_user_esp;        // useresp
+//     *(--esp) = 0x00000202;          // eflags
+//     *(--esp) = 0x1B;                // cs
+//     *(--esp) = (uint32_t)func_ptr;  // eip (0x00400000)
     
 //     *(--esp) = 0;                   // err_code
-//     *(--esp) = 0;                   // int_no
+//     *(--esp) = 32;                  // int_no
     
-//     // General Purpose Registers unrolled in exact reverse order of your struct:
-//     *(--esp) = 0;                   // eax
-//     *(--esp) = 0;                   // ecx
-//     *(--esp) = 0;                   // edx
-//     *(--esp) = 0;   
-//      print("spawning task:esp1\n");                // ebx
-//     *(--esp) = (uint32_t)esp;       // esp
-//     *(--esp) = 0;                   // ebp
-//     *(--esp) = 0;                   // esi
-//     *(--esp) = 0;                   // edi
+//     *(--esp) = 0; *(--esp) = 0; *(--esp) = 0; *(--esp) = 0; // eax, ecx, edx, ebx
+//     *(--esp) = 0; *(--esp) = 0; *(--esp) = 0; *(--esp) = 0; // esp, ebp, esi, edi
     
-//     *(--esp) = 0x10;                // ds
+//     *(--esp) = 0x23;                // ds
 //     *(--esp) = 0;                   // cr2
-
-//      print("spawning task:lastttttt\n");
-
-//     // 5. Fill out the rest of the Task information card
-//     // print_uint(current_task->id);
-//     if (current_task == 0)
-//     {
-//         print("Current task is 0\n");
-//     }
-//     else
-//     {
-//         print_uint((uint32_t)current_task);
-//         print("\nCurrent Task is not 0\n");
-//         print_uint(current_task->id);
-//     }
     
-//     new_task->id = current_task->id++;
-//     print("spawning task:pid++\n");
+//     // 4. Populate all metadata fields explicitly
+//     new_task->id = next_pid++;
 //     new_task->page_directory = (uint32_t)memGetCurrentPageDir();
+//     new_task->kernel_stack_ptr = kernel_stack;
+//     new_task->regs = (struct InterruptRegisters*)esp;
     
-//      print("spawning task:pgd");
-//     // Safely point our saved registers data directly to this freshly forged stack layout
-//     new_task->regs = *(struct InterruptRegisters*)esp;
-//      print("spawning task:regs");
-//     // 6. Thread this new task directly into our circular linked carousel chain
-//     new_task->next = ready_queue->next;
-//     ready_queue->next = new_task;
-//      print("spawning task:end\n");
+//     // CRITICAL: Guarantee this field is written cleanly before linking
+//     new_task->is_alive = 1; 
+
+//     // 5. Thread the task card directly into the current execution loop lane!
+//     // By using current_task instead of ready_queue, we ensure immediate rotation stability.
+//     new_task->next = current_task->next;
+//     current_task->next = new_task;
+    
 //     return new_task;
 // }
+
+// Declare an external hook to let us get the raw physics/virtual address of current dir
+extern uint32_t* memGetCurrentPageDir();
+
+Task* spawn_user_task(void (*func_ptr)()) {
+    Task* new_task = (Task*)kmalloc(sizeof(Task));
+    if (new_task == 0) {
+        print("CRITICAL ERROR: User Task allocation failed!\n");
+        while(1);
+    }
+
+    uint32_t* kernel_stack = (uint32_t*)kmalloc(8192);
+    uint32_t* esp = (uint32_t*)((uint32_t)kernel_stack + 8192);
+
+    // Directory creation + code copy now happens entirely inside this one call
+    uint32_t process_physical_cr3 = create_process_page_directory(func_ptr);
+
+    uint32_t raw_user_esp = 0x007FFFF0;
+    *(--esp) = 0x23;                // ss
+    *(--esp) = raw_user_esp;        // useresp
+    *(--esp) = 0x00000202;          // eflags
+    *(--esp) = 0x1B;                // cs
+    *(--esp) = 0x00400000;          // eip — always the start of the mapped user page
+
+    *(--esp) = 0;                   // err_code
+    *(--esp) = 32;                  // int_no
+
+    *(--esp) = 0; *(--esp) = 0; *(--esp) = 0; *(--esp) = 0; // eax, ecx, edx, ebx
+    *(--esp) = 0; *(--esp) = 0; *(--esp) = 0; *(--esp) = 0; // esp, ebp, esi, edi
+    *(--esp) = 0x23;                // ds
+    *(--esp) = 0;                   // cr2
+
+    new_task->id = next_pid++;
+    new_task->page_directory = process_physical_cr3;
+    new_task->kernel_stack_ptr = kernel_stack;
+    new_task->regs = (struct InterruptRegisters*)esp;
+    new_task->is_alive = 1;
+
+    new_task->next = current_task->next;
+    current_task->next = new_task;
+
+    return new_task;
+}
 
 
 // Called by your assembly interrupt handler on every timer tick

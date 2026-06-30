@@ -5,9 +5,11 @@
 #include "../gdt/gdt.h"
 #include "../task.h"
 #include "../stdlib/stdio.h"
+#include "../syscall.h"
 struct idt_entry_struct idt_entries[256];
 struct idt_ptr_struct idt_ptr;
 
+extern struct tss_entry_struct tss_entry;
 extern void idt_flush(uint32_t);
 extern Task* current_task;
 extern uint64_t ticks;
@@ -83,8 +85,8 @@ void initIdt(){
     setIdtGate(46, (uint32_t)irq14, 0x08, 0x8E);
     setIdtGate(47, (uint32_t)irq15, 0x08, 0x8E);
 
-    setIdtGate(128, (uint32_t)isr128, 0x08, 0x8E);
-    setIdtGate(177, (uint32_t)isr177, 0x08, 0x8E);
+    setIdtGate(128, (uint32_t)isr128, 0x08, 0xEE);
+    setIdtGate(177, (uint32_t)isr177, 0x08, 0xEE);
 
     idt_flush((uint32_t)&idt_ptr);
 }
@@ -134,13 +136,100 @@ char* exception_messages[] = {
     "Reserved"
 };
 
-void isr_handler(struct InterruptRegisters* regs){
+// void handle_syscall(struct InterruptRegisters* regs) {
+//     // Check if the user is asking to print a character (EAX = 'U' or other chars)
+//     char user_char = (char)(regs->eax);
+
+//     // Create a tiny 2-byte string to feed your standard kernel string printer safely
+//     char buf[2];
+//     buf[0] = user_char;
+//     buf[1] = '\0';
+
+//     print(buf); // Safe execution inside Ring 0!
+// }
+
+// Individual implementation for System Call 1: Print Character
+void syscall_print_char(char c) {
+    char buf[2];
+    buf[0] = c;
+    buf[1] = '\0';
+    print(buf);
+}
+
+// Individual implementation for System Call 2: Print String
+void syscall_print_string(const char* str) {
+    print((char*)str);
+}
+
+// Force a manual CPU software interrupt to trip a context switch instantly
+static inline void force_scheduler_yield() {
+    __asm__ volatile("int $0x20"); // Tripping the PIT Timer interrupt gate manually
+}
+
+void syscall_exit(int exit_code) {
+    // 1. Complete ALL print streams first while the task is officially alive
+    print("\n[Process Exited with code: ");
+    print_int(exit_code);
+    print("]\n");
+
+    // 2. Add a tiny delay spin loop so the hardware/emulator video states can flush 
+    // and draw the characters onto the screen layout safely
+    for (volatile int i = 0; i < 2000000; i++);
+
+    // 3. NOW it is safe to flag the running task card as dead
+    current_task->is_alive = 0;
+
+    // 4. Yield control away to the scheduler
+    force_scheduler_yield();
+
+    while(1); 
+}
+
+
+
+// The core router that captures int 0x80
+void handle_syscall(struct InterruptRegisters* regs) {
+    // Look at EAX to determine which service the user wants
+    uint32_t syscall_number = regs->eax;
+
+    switch (syscall_number) {
+        case SYS_EXIT:
+            // Pass the first argument from EBX
+            syscall_exit((int)regs->ebx);
+            break;
+
+        case SYS_PRINT_CHAR:
+            // Pass the first argument from EBX
+            syscall_print_char((char)regs->ebx);
+            break;
+
+        case SYS_PRINT_STR:
+            // Pass a pointer string argument from EBX
+            syscall_print_string((const char*)regs->ebx);
+            break;
+
+        default:
+            print("UNKNOWN SYSCALL TRIGGERED: ");
+            print_int(syscall_number);
+            print("\n");
+            break;
+    }
+}
+
+
+uint32_t isr_handler(struct InterruptRegisters* regs){
+    if (regs->int_no == 128) {
+        handle_syscall(regs);
+        return (uint32_t)regs; // Resume user program execution cleanly
+    }
+
     if (regs->int_no < 32){
         print(exception_messages[regs->int_no]);
         print("\n");
         print("Exception! System Halted\n");
         for (;;);
     }
+    return (uint32_t)regs;
 }
 
 void *irq_routines[16] = {
@@ -156,39 +245,6 @@ void irq_uninstall_handler(int irq){
     irq_routines[irq] = 0;
 }
 
-// uint32_t irq_handler(struct InterruptRegisters* regs) {
-//     // Safety guard for early ticks before multitasking initialization
-//     if (current_task == 0) {
-//         if (regs->int_no == 32) {
-//             ticks += 1;
-//         }
-//         if (regs->int_no >= 40) outPortB(0xA0, 0x20);
-//         outPortB(0x20, 0x20);
-//         return (uint32_t)regs;
-//     }
-
-//     // Handle PIT Timer Ticks (IRQ 0 / Interrupt 32)
-//     if (regs->int_no == 32) {
-//         ticks += 1;
-//         outPortB(0x20, 0x20); // Signal EOI to PIC immediately
-//         printf("switching to task id=%d esp=%x eip=%x\n", current_task->id, (uint32_t)&current_task->regs, current_task->regs.eip);
-//         current_task->regs = *regs;             // Save current register layout
-        
-//         current_task = current_task->next;      // Move forward to the next task card
-        
-//         //switchTSS((uint32_t)&(current_task->regs), sizeof(struct InterruptRegisters));
-//         return (uint32_t)&(current_task->regs); // Send new task stack pointer to eax
-//     }
-
-//     // Handle other hardware interrupts (Keyboard, etc.)
-//     if (regs->int_no >= 40) {
-//         outPortB(0xA0, 0x20);
-//     }
-//     outPortB(0x20, 0x20);
-
-//     return (uint32_t)regs; // Keep current task execution if not a timer tick
-// }
-
 uint32_t irq_handler(struct InterruptRegisters* regs) {
     if (current_task == 0) {
         if (regs->int_no == 32) ticks += 1;
@@ -197,18 +253,36 @@ uint32_t irq_handler(struct InterruptRegisters* regs) {
         return (uint32_t)regs;
     }
 
-    if (regs->int_no == 32) {
+        if (regs->int_no == 32) {
         ticks += 1;
-        outPortB(0x20, 0x20);
+        outPortB(0x20, 0x20); // Send EOI
 
-        // Fix: Save the pointer address directly! No massive memory copying.
-        current_task->regs = regs;             
+        if (current_task->is_alive) {
+            current_task->regs = regs;
+        }
+
+        Task* previous_task = current_task;
+        current_task = current_task->next;
+
+        if (current_task->is_alive == 0) {
+            if (current_task->id != 0) {
+                print(" [Reaping Dead Task ID: "); print_int(current_task->id); print("] \n");
+                previous_task->next = current_task->next;
+                current_task = current_task->next;
+            }
+        }
+
+        // --- CRITICAL VIRTUAL MEMORY ISOLATION SWAP ---
+        // Force the physical CPU to switch to the new task's private page directory universe!
+        __asm__ volatile("mov %0, %%cr3" : : "r"(current_task->page_directory));
+
+        // Update the hardware TSS stack anchor reference pointer
+        //tss_entry.esp0 = (uint32_t)(current_task->regs) + sizeof(struct InterruptRegisters);
+        tss_entry.esp0 = (uint32_t) current_task->kernel_stack_ptr + 8192;
         
-        current_task = current_task->next;      
-        
-        // Return the address stored inside the pointer
-        return (uint32_t)(current_task->regs); 
+        return (uint32_t)(current_task->regs);
     }
+
 
     if (regs->int_no >= 40) outPortB(0xA0, 0x20);
     outPortB(0x20, 0x20);

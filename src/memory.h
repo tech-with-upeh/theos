@@ -8,6 +8,8 @@ void invalidate(uint32_t vaddr);
 uint32_t pmmAllocPageFrame();
 uint32_t* memGetCurrentPageDir();
 void memChangePageDir(uint32_t* pd);
+uint32_t memGetPhysicalAddr(uint32_t virtualAddr);
+uint32_t create_process_page_directory(void (*func_ptr)());
 void syncPageDirs();
 void memMapPage(uint32_t virutalAddr, uint32_t physAddr, uint32_t flags);
 

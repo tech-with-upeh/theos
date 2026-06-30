@@ -76,3 +76,8 @@ void* kmalloc(uint32_t size) {
     // Return the clean pointer back to your multitasking system
     return allocatedAddress;
 }
+
+void* kmallocAligned(uint32_t size) {
+    void* ptr = kmalloc(size + 0xFFF); // overallocate to guarantee room to align
+    return (void*)(((uint32_t)ptr + 0xFFF) & ~0xFFF);
+}

@@ -13,3 +13,5 @@ struct InterruptRegisters{
     uint32_t eip, csm, eflags, useresp, ss;
 };
 
+void* memcpy(void* dest, const void* src, uint32_t count);
+
