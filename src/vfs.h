@@ -16,7 +16,7 @@ typedef void (*vfs_close_type)(struct vfs_node* node);
 
 // The primary object representing any file, folder, or device block
 typedef struct vfs_node {
-    char name[128];          // File name
+    char* name;          // File name
     uint32_t type;           // VFS_FILE or VFS_DIRECTORY
     uint32_t size;           // File size in bytes
     uint32_t inode;          // A unique index used by the underlying filesystem layout
