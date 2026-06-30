@@ -13,66 +13,86 @@
 #include "vfs.h"
 #include "initrd.h"
 
-#include "libc/ulib.h"
-
 static inline void asm_enable_interrupts() {
     __asm__ volatile("sti");
 }
 
 // "__attribute__((naked))" forces GCC to omit function prologues and epilogues.
-// This completely stops stack frame register pollution during raw code copying!
 void __attribute__((naked)) my_userspace_task() {
     __asm__ volatile (
         "jmp .user_init\n\t"
         
-        // Embed the filename and a clean buffer directly within our task memory pool
         ".filename_str:\n\t"
         ".ascii \"test.txt\\0\"\n\t"
         
         ".align 4\n\t"
-        ".user_buffer:\n\t"
-        ".fill 64, 1, 0\n\t" // Allocates a clean 64-byte user space text buffer initialized to 0
+        ".user_buffer1:\n\t"
+        ".fill 16, 1, 0\n\t" // First 16-byte buffer zone
+        
+        ".align 4\n\t"
+        ".user_buffer2:\n\t"
+        ".fill 16, 1, 0\n\t" // Second 16-byte buffer zone
         
         ".align 4\n\t"
         ".user_init:\n\t"
         
         // --- 1. INVOKE SYS_OPEN ---
-        "call .get_filename_addr\n\t"
-        ".get_filename_addr:\n\t"
-        "pop %%ebx\n\t"
-        "sub $(.get_filename_addr - .filename_str), %%ebx\n\t" // EBX now holds pointer to "test.txt"
+        "call .get_eip\n\t"
+        ".get_eip:\n\t"
+        "pop %%ebx\n\t" 
+        "mov $.get_eip, %%ecx\n\t"
+        "mov $.filename_str, %%edx\n\t"
+        "sub %%edx, %%ecx\n\t" 
+        "sub %%ecx, %%ebx\n\t" // EBX = Live pointer to "test.txt"
         
-        "mov $3, %%eax\n\t" // SYS_OPEN = 3
-        "int $0x80\n\t"     // Execute Syscall. Result (File Descriptor) is returned in EAX.
+        "mov $3, %%eax\n\t" 
+        "int $0x80\n\t"     
+        "mov %%eax, %%esi\n\t" // ESI = Saved File Descriptor ID
         
-        // FIX: Save returned file descriptor into ESI instead of EBP
-        "mov %%eax, %%esi\n\t" 
-        
-        // --- 2. INVOKE SYS_READ ---
-        "mov %%esi, %%ebx\n\t" // Parameter 1 (EBX): File Descriptor ID
-        
-        "call .get_buffer_addr\n\t"
-        ".get_buffer_addr:\n\t"
+        // --- 2. FIRST SYS_READ (Fetch 5 bytes into buffer 1) ---
+        "mov %%esi, %%ebx\n\t" // FD
+        "call .get_buf1\n\t"
+        ".get_buf1:\n\t"
         "pop %%ecx\n\t"
-        "sub $(.get_buffer_addr - .user_buffer), %%ecx\n\t" // Parameter 2 (ECX): Target Buffer Pointer
-        
-        "mov $32, %%edx\n\t"   // Parameter 3 (EDX): Read Size (32 bytes)
-        "mov $4, %%eax\n\t"    // SYS_READ = 4
+        "mov $.get_buf1, %%eax\n\t"
+        "mov $.user_buffer1, %%edx\n\t"
+        "sub %%edx, %%eax\n\t"
+        "sub %%eax, %%ecx\n\t" // ECX = Pointer to user_buffer1
+        "mov $5, %%edx\n\t"    // Read size = 5 bytes
+        "mov $4, %%eax\n\t"    // SYS_READ
         "int $0x80\n\t"
         
-        // --- 3. INVOKE SYS_PRINT_STR TO SHOW THE DATA ---
-        "mov %%ecx, %%ebx\n\t" // Move our freshly populated buffer pointer into EBX
-        "mov $2, %%eax\n\t"    // SYS_PRINT_STR = 2
+        // Print the first buffer chunk
+        "mov %%ecx, %%ebx\n\t"
+        "mov $2, %%eax\n\t"    // SYS_PRINT_STR
         "int $0x80\n\t"
         
-        // --- 4. EXIT PROCESS SAFELY ---
+        // --- 3. SECOND SYS_READ (Fetch the NEXT 5 bytes into buffer 2) ---
+        "mov %%esi, %%ebx\n\t" // FD
+        "call .get_buf2\n\t"
+        ".get_buf2:\n\t"
+        "pop %%ecx\n\t"
+        "mov $.get_buf2, %%eax\n\t"
+        "mov $.user_buffer2, %%edx\n\t"
+        "sub %%edx, %%eax\n\t"
+        "sub %%eax, %%ecx\n\t" // ECX = Pointer to user_buffer2
+        "mov $5, %%edx\n\t"    // Read size = 5 bytes
+        "mov $4, %%eax\n\t"    // SYS_READ
+        "int $0x80\n\t"
+        
+        // Print the second buffer chunk
+        "mov %%ecx, %%ebx\n\t"
+        "mov $2, %%eax\n\t"    // SYS_PRINT_STR
+        "int $0x80\n\t"
+        
+        // --- 4. EXIT PROCESS ---
         "mov $0, %%ebx\n\t"
         "mov $0, %%eax\n\t"
         "int $0x80\n\t"
         
         :
         :
-        : // FIX: Left completely empty! No inputs, outputs, or clobbers needed for raw naked assembly block
+        :
     );
 }
 
@@ -84,8 +104,7 @@ void kmain(uint32_t magic, struct multiboot_info* bootInfo){
     print("GDT is done!\r\n");
     initIdt();
     initTimer();
-    initKeyboard();
-
+    
     // 1. Read baseline parameters safely from bootInfo
     uint32_t mem_upper      = bootInfo->mem_upper;
     uint32_t flags          = bootInfo->flags;
@@ -121,12 +140,12 @@ void kmain(uint32_t magic, struct multiboot_info* bootInfo){
     // --- PASS THE HIGHLY ACCURATE PHYSICAL EXTRACTS ---
     initrd_init(tar_start, tar_end);
 
-    spawn_user_task(&my_userspace_task);
-    print("Userspace task registered.\n");
+    // spawn_user_task(&my_userspace_task);
+    // print("Userspace task registered.\n");
 
+    spawn_program("shell.bin");
     asm_enable_interrupts();
+    initKeyboard();
 
-    while(1) {
-        for(volatile int i = 0; i < 5000000; i++);
-    }
+    for(;;);
 }

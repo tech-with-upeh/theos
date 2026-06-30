@@ -2,51 +2,50 @@ gcc=/home/codezero/opt/cross/bin/i686-elf-gcc
 ld=/home/codezero/opt/cross/bin/i686-elf-ld
 CFLAGS = -ffreestanding -g -Isrc
 
-# 1. Cleanly grab all source files, removing any leading "./" paths
-C_SOURCES := $(patsubst ./%, %, $(shell find src -name "*.c"))
+C_SOURCES := $(patsubst ./%, %, $(shell find src -name "*.c" -not -path "src/apps/*"))
 ASM_SOURCES := $(patsubst ./%, %, $(shell find src -name "*.s"))
 
-# 2. Separate boot.s so it is explicitly forced to be linked first
 BOOT_SOURCE := src/boot.s
 BOOT_OBJECT := obj/src/boot.o
 
-# Filter out boot.s from the rest of the assembly files
 OTHER_ASM_SOURCES := $(filter-out $(BOOT_SOURCE), $(ASM_SOURCES))
-
-# --- CRITICAL FIX: Append .asm.o to assembly files to prevent collisions with .c files! ---
-# e.g., src/gdt/gdt.c -> obj/src/gdt/gdt.o
-# e.g., src/gdt/gdt.s -> obj/src/gdt/gdt.asm.o
 C_OBJECTS := $(patsubst %.c, obj/%.o, $(C_SOURCES))
 OTHER_ASM_OBJECTS := $(patsubst %.s, obj/%.asm.o, $(OTHER_ASM_SOURCES))
 
-all: clean initrd image
+all: clean user_apps initrd image
 
 clean:
-	rm -rf obj kernel.iso Jazz/boot/initrd.tar
+	rm -rf obj kernel.iso Jazz/boot/initrd.tar initrd_root
 
-# Rule to compile C files into standard .o targets
 obj/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(gcc) $(CFLAGS) -c $< -o $@
 
-# --- MATCHING FIX: Pattern rule to assemble raw .s into distinct .asm.o targets ---
 obj/%.asm.o: %.s
 	@mkdir -p $(dir $@)
 	nasm -f elf32 $< -o $@
 
-# Explicit separate rule for boot.o since it acts as our static head anchor
 $(BOOT_OBJECT): $(BOOT_SOURCE)
 	@mkdir -p $(dir $@)
 	nasm -f elf32 $< -o $@
 
+# --- NEW: Compile your independent user applications completely separate from the kernel ---
+user_apps:
+	@mkdir -p initrd_root
+	@mkdir -p obj
+	# FIX: Added -fno-pic to guarantee linear local layout offsets
+	$(gcc) $(CFLAGS) -fno-pic -fno-stack-protector -ffunction-sections -c src/apps/libc/ulib.c -o obj/ulib.o
+	$(gcc) $(CFLAGS) -fno-pic -fno-stack-protector -ffunction-sections -c src/apps/shell.c -o obj/shell.o
+	$(ld) -T src/apps/userlinker.ld --oformat binary obj/ulib.o obj/shell.o -o initrd_root/shell.bin
+
+
 initrd:
-	mkdir -p initrd_root
+	# Pack the generated binaries directly into the multiboot archive
 	touch initrd_root/test.txt
 	echo "Hello from GRUB Ramdisk!" > initrd_root/test.txt
 	cd initrd_root && tar -cf ../Jazz/boot/initrd.tar *
 
 image: $(BOOT_OBJECT) $(C_OBJECTS) $(OTHER_ASM_OBJECTS)
-	@echo "Linking files cleanly without naming collisions!"
 	$(ld) -T linker.ld -o kernel $(BOOT_OBJECT) $(C_OBJECTS) $(OTHER_ASM_OBJECTS)
 	mv kernel Jazz/boot/kernel
 	grub-mkrescue -o kernel.iso Jazz/

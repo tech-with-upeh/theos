@@ -6,7 +6,6 @@ gcc-16.1.0/
 binutils-2.46.1.tar.gz
 gcc-16.1.0.tar.gz
 qemu.log
-obj/src
 obj/
 *.o
 kernel

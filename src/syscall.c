@@ -38,57 +38,24 @@ extern struct vfs_node initrd_nodes[MAX_INITRD_FILES];
 extern uint32_t initrd_file_count;
 
 int syscall_open(const char* filename) {
-    // Keep your excellent diagnostic prints active!
-    printf("[DEBUG] User pointer address in EBX = %x\n", (uint32_t)filename);
+    printf("[Kernel Open]: User space requested file: %s\n", filename);
     
     int file_index = -1;
     for (uint32_t i = 0; i < initrd_file_count; i++) {
         char* node_name = initrd_nodes[i].name;
-
-        // --- ADD THIS DIAGNOSTIC PRINT ---
-        printf("[DEBUG] Comparing user '%s' against RAMdisk file ID %d: ", filename, i);
-        for(int d = 0; d < 15; d++) {
-            char c = node_name[d];
-            if (c >= 32 && c <= 126) printf("%c", c);
-            else if (c == '\0') { printf("[\\0]"); break; }
-            else printf("[%x]", (uint8_t)c);
-        }
-        printf("\n");
-        // ---------------------------------
-        
         if (node_name == 0) continue;
 
         int match = 1;
         int j = 0;
-        
-        // Loop until we find a difference, OR until BOTH strings hit their terminators
         while (1) {
             char f_char = filename[j];
             char n_char = node_name[j];
-
-            // Normalize TAR padding spaces/slashes to a standard null terminator
-            if (n_char == ' ' || n_char == '/') {
-                n_char = '\0';
-            }
-
-            // If characters mismatch at this index, break immediately
-            if (f_char != n_char) {
-                match = 0;
-                break;
-            }
-
-            // If BOTH strings successfully ended at the exact same index, it's a match!
-            if (f_char == '\0' && n_char == '\0') {
-                break;
-            }
-
+            if (n_char == ' ' || n_char == '/') n_char = '\0';
+            if (f_char != n_char) { match = 0; break; }
+            if (f_char == '\0' && n_char == '\0') break;
             j++;
         }
-        
-        if (match) {
-            file_index = i;
-            break;
-        }
+        if (match) { file_index = i; break; }
     }
 
     if (file_index == -1) {
@@ -96,10 +63,11 @@ int syscall_open(const char* filename) {
         return -1;
     }
 
-    // Find a free slot in the current task's file descriptor table
+    // Find a free handle slot in the current task descriptor array
     int fd_slot = -1;
     for (int i = 0; i < MAX_PROCESS_FILES; i++) {
-        if (current_task->file_descriptors[i] == 0) {
+        // Checking if the node pointer inside the handle structure is empty (0)
+        if (current_task->file_descriptors[i].node == 0) {
             fd_slot = i;
             break;
         }
@@ -110,28 +78,33 @@ int syscall_open(const char* filename) {
         return -1;
     }
 
-    // Bind the VFS node directly to this process's local handle slot
-    current_task->file_descriptors[fd_slot] = &initrd_nodes[file_index];
+    // --- FIX: Assign node and initialize the streaming offset ---
+    current_task->file_descriptors[fd_slot].node = &initrd_nodes[file_index];
+    current_task->file_descriptors[fd_slot].offset = 0; // Fresh open starts at the beginning
+    
     printf("[Kernel Open Success]: Assigned file '%s' to File Descriptor ID: %d\n", filename, fd_slot);
-
     return fd_slot;
 }
 
-
-// --- NEW VFS READ SYSTEM CALL ---
-// Reads data from an open file descriptor index into a user-allocated buffer
 int syscall_read(int fd, uint8_t* buffer, uint32_t size) {
     if (fd < 0 || fd >= MAX_PROCESS_FILES) return -1;
     
-    struct vfs_node* node = current_task->file_descriptors[fd];
-    if (node == 0) {
+    // Grab a pointer to the process file handle object
+    file_handle_t* handle = &current_task->file_descriptors[fd];
+    if (handle->node == 0) {
         printf("Syscall Error: Invalid file descriptor target %d\n", fd);
         return -1;
     }
 
-    // Call our underlying abstract VFS framework router!
-    // Offset is hardcoded to 0 for simplicity right now; we can track a custom read-head offset later.
-    return vfs_read(node, 0, size, buffer);
+    // --- STREAMING OFFSET MATH ---
+    // Pass the saved runtime offset into your existing VFS framework router
+    uint32_t bytes_read = vfs_read(handle->node, handle->offset, size, buffer);
+
+    // Push the file offset pointer forward by the number of bytes successfully retrieved
+    handle->offset += bytes_read;
+
+    // Return the actual number of bytes read back to user space (EAX)
+    return (int)bytes_read;
 }
 
 // The core router that captures int 0x80

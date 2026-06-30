@@ -11,7 +11,7 @@ vfs_node_t initrd_root;
 uint32_t initrd_file_count = 0;
 
 // Dynamic lookups of file data pointers in physical memory
-static uint32_t initrd_file_headers[MAX_INITRD_FILES];
+uint32_t initrd_file_headers[MAX_INITRD_FILES];
 
 // --- FIX: Create a permanent, globally visible storage pool for your file names ---
 static char initrd_names[MAX_INITRD_FILES][64];
