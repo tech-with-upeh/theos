@@ -53,6 +53,10 @@ image: $(BOOT_OBJECT) $(C_OBJECTS) $(OTHER_ASM_OBJECTS)
 qm:
 	qemu-system-i386 -drive format=raw,file=kernel.iso
 
+qmss:
+	dd if=/dev/zero of=disk.img bs=1M count=10 status=none
+	qemu-system-i386 -boot d -cdrom kernel.iso -drive format=raw,file=disk.img,if=ide,index=0,media=disk
+
 dbg:
 	qemu-system-i386 -s -S -drive format=raw,file=kernel.iso
 

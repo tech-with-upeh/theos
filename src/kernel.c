@@ -12,91 +12,12 @@
 #include "task.h"
 #include "vfs.h"
 #include "initrd.h"
+#include "pci.h"
+#include "ata.h"
 
 static inline void asm_enable_interrupts() {
     __asm__ volatile("sti");
 }
-
-// "__attribute__((naked))" forces GCC to omit function prologues and epilogues.
-void __attribute__((naked)) my_userspace_task() {
-    __asm__ volatile (
-        "jmp .user_init\n\t"
-        
-        ".filename_str:\n\t"
-        ".ascii \"test.txt\\0\"\n\t"
-        
-        ".align 4\n\t"
-        ".user_buffer1:\n\t"
-        ".fill 16, 1, 0\n\t" // First 16-byte buffer zone
-        
-        ".align 4\n\t"
-        ".user_buffer2:\n\t"
-        ".fill 16, 1, 0\n\t" // Second 16-byte buffer zone
-        
-        ".align 4\n\t"
-        ".user_init:\n\t"
-        
-        // --- 1. INVOKE SYS_OPEN ---
-        "call .get_eip\n\t"
-        ".get_eip:\n\t"
-        "pop %%ebx\n\t" 
-        "mov $.get_eip, %%ecx\n\t"
-        "mov $.filename_str, %%edx\n\t"
-        "sub %%edx, %%ecx\n\t" 
-        "sub %%ecx, %%ebx\n\t" // EBX = Live pointer to "test.txt"
-        
-        "mov $3, %%eax\n\t" 
-        "int $0x80\n\t"     
-        "mov %%eax, %%esi\n\t" // ESI = Saved File Descriptor ID
-        
-        // --- 2. FIRST SYS_READ (Fetch 5 bytes into buffer 1) ---
-        "mov %%esi, %%ebx\n\t" // FD
-        "call .get_buf1\n\t"
-        ".get_buf1:\n\t"
-        "pop %%ecx\n\t"
-        "mov $.get_buf1, %%eax\n\t"
-        "mov $.user_buffer1, %%edx\n\t"
-        "sub %%edx, %%eax\n\t"
-        "sub %%eax, %%ecx\n\t" // ECX = Pointer to user_buffer1
-        "mov $5, %%edx\n\t"    // Read size = 5 bytes
-        "mov $4, %%eax\n\t"    // SYS_READ
-        "int $0x80\n\t"
-        
-        // Print the first buffer chunk
-        "mov %%ecx, %%ebx\n\t"
-        "mov $2, %%eax\n\t"    // SYS_PRINT_STR
-        "int $0x80\n\t"
-        
-        // --- 3. SECOND SYS_READ (Fetch the NEXT 5 bytes into buffer 2) ---
-        "mov %%esi, %%ebx\n\t" // FD
-        "call .get_buf2\n\t"
-        ".get_buf2:\n\t"
-        "pop %%ecx\n\t"
-        "mov $.get_buf2, %%eax\n\t"
-        "mov $.user_buffer2, %%edx\n\t"
-        "sub %%edx, %%eax\n\t"
-        "sub %%eax, %%ecx\n\t" // ECX = Pointer to user_buffer2
-        "mov $5, %%edx\n\t"    // Read size = 5 bytes
-        "mov $4, %%eax\n\t"    // SYS_READ
-        "int $0x80\n\t"
-        
-        // Print the second buffer chunk
-        "mov %%ecx, %%ebx\n\t"
-        "mov $2, %%eax\n\t"    // SYS_PRINT_STR
-        "int $0x80\n\t"
-        
-        // --- 4. EXIT PROCESS ---
-        "mov $0, %%ebx\n\t"
-        "mov $0, %%eax\n\t"
-        "int $0x80\n\t"
-        
-        :
-        :
-        :
-    );
-}
-
-
 void kmain(uint32_t magic, struct multiboot_info* bootInfo);
 
 void kmain(uint32_t magic, struct multiboot_info* bootInfo){
@@ -137,15 +58,31 @@ void kmain(uint32_t magic, struct multiboot_info* bootInfo){
     init_multitasking();
     print("Memory allocation done!\n");
 
+    pci_scan_bus();
+    init_ata(); 
+
+    vfs_node_t* hd = ata_get_vfs_node();
+
+    // 1. Prepare data chunks
+    uint8_t write_payload[13] = "OSDev Rocks!";
+    uint8_t read_verify[13] = {0}; // +1 for null terminator
+
+    // 2. Commit payload to offset address 0
+    vfs_write(hd, 0, 12, write_payload);
+    printf("Disk write committed!\n");
+
+    // 3. Clear data and read it back from disk to verify
+    vfs_read(hd, 0, 13, read_verify);
+    printf("Disk read verification value: %s\n", (char*)read_verify);
     // --- PASS THE HIGHLY ACCURATE PHYSICAL EXTRACTS ---
     initrd_init(tar_start, tar_end);
 
     // spawn_user_task(&my_userspace_task);
     // print("Userspace task registered.\n");
 
-    spawn_program("shell.bin");
+    // spawn_program("shell.bin");
     asm_enable_interrupts();
     initKeyboard();
-
+    printf("Kernel initialization complete. Entering idle loop...\n");
     for(;;);
 }

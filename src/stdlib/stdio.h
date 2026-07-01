@@ -3,6 +3,10 @@ void puts(const char* str);
 void printf(const char* fmt, ...);
 int * printf_number(int*, int, bool_t, int);
 
+#if !defined(NULL)
+#define NULL ((void*)0)
+#endif
+
 extern void x86_div64_32(uint64_t, uint32_t, uint64_t*, uint32_t*);
 
 #define PRINTF_STATE_START 0

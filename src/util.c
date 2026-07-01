@@ -30,3 +30,13 @@ char inPortB(uint16_t port){
     asm volatile("inb %1, %0": "=a"(rv):"dN"(port));
     return rv;
 }
+
+void outPortL(uint16_t port, uint32_t value) {
+    __asm__ volatile("outl %0, %1" : : "a"(value), "Nd"(port));
+}
+
+uint32_t inPortL(uint16_t port) {
+    uint32_t result;
+    __asm__ volatile("inl %1, %0" : "=a"(result) : "Nd"(port));
+    return result;
+}
