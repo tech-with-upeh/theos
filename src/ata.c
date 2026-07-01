@@ -3,110 +3,163 @@
 #include "kmalloc.h"
 #include "stdlib/stdio.h"
 
+uint16_t ata_base_io = 0x1F0; 
+uint16_t ata_base_ctrl = 0x3F6; // Dynamically adjusted along with base IO
 static vfs_node_t* ata_device_node = NULL;
 
-// New Helper: Creates the mandatory 400ns bus delay required by the ATA specification
+// 1. Spec-Compliant 400ns Hardware Bus Delays
 static void ata_io_delay(void) {
-    inPortB(0x3F6);
-    inPortB(0x3F6);
-    inPortB(0x3F6);
-    inPortB(0x3F6);
+    // Read the alternate status port mapped to this controller 4 times
+    inPortB(ata_base_ctrl);
+    inPortB(ata_base_ctrl);
+    inPortB(ata_base_ctrl);
+    inPortB(ata_base_ctrl);
 }
 
-// Poll the status register until the busy flag (BSY) is cleared
 static void ata_wait_ready(void) {
     ata_io_delay();
-    while (inPortB(ATA_STATUS) & ATA_STATUS_BSY);
+    uint8_t status;
+    while (1) {
+        status = inPortB(ATA_REG_STATUS);
+        if (status == 0xFF) {
+            printf("ATA Error: Floating bus detected! No drive connected.\n");
+            return; 
+        }
+        if (!(status & ATA_STATUS_BSY)) {
+            break;
+        }
+    }
 }
 
-// Poll until the data request flag (DRQ) is explicitly set by the controller
 static void ata_wait_drq(void) {
     ata_io_delay();
-    while (!(inPortB(ATA_STATUS) & ATA_STATUS_DRQ));
+    uint8_t status;
+    while (1) {
+        status = inPortB(ATA_REG_STATUS);
+        if (status == 0xFF) return;
+        if (status & ATA_STATUS_DRQ) {
+            break;
+        }
+    }
 }
 
-// Read a single 512-byte sector using 28-bit LBA addressing
+
+// 3. Robust 16-Bit PIO Sector Reader
 void ata_read_sector(uint32_t lba, uint8_t* buffer) {
     ata_wait_ready();
 
-    outPortB(ATA_DRIVE_SEL, 0xE0 | ((lba >> 24) & 0x0F));
+    outPortB(ATA_REG_DRIVE_SEL, 0xE0 | ((lba >> 24) & 0x0F));
     ata_io_delay();
     
-    outPortB(ATA_SECTOR_CNT, 1);
-    outPortB(ATA_LBA_LOW,  (uint8_t)lba);
-    outPortB(ATA_LBA_MID,  (uint8_t)(lba >> 8));
-    outPortB(ATA_LBA_HIGH, (uint8_t)(lba >> 16));
+    outPortB(ATA_REG_SECTOR_CNT, 1);
+    outPortB(ATA_REG_LBA_LOW,  (uint8_t)lba);
+    outPortB(ATA_REG_LBA_MID,  (uint8_t)(lba >> 8));
+    outPortB(ATA_REG_LBA_HIGH, (uint8_t)(lba >> 16));
     
-    outPortB(ATA_COMMAND, ATA_CMD_READ);
+    outPortB(ATA_REG_COMMAND, ATA_CMD_READ);
     
-    // Wait for the drive to process command and signal data availability
     ata_wait_ready();
     ata_wait_drq();
 
+    // CORRECT: Read 256 words using 16-bit IN instructions
     uint16_t* buf16 = (uint16_t*)buffer;
     for (int i = 0; i < 256; i++) {
-        uint8_t low = inPortB(ATA_DATA);
-        uint8_t high = inPortB(ATA_DATA);
-        buf16[i] = low | (high << 8);
+        buf16[i] = inPortL(ATA_REG_DATA); // Must be a 16-bit reading primitive
     }
 }
 
-// Write a single 512-byte sector using 28-bit LBA addressing
+// 4. Robust 16-Bit PIO Sector Writer
 void ata_write_sector(uint32_t lba, uint8_t* buffer) {
     ata_wait_ready();
 
-    outPortB(ATA_DRIVE_SEL, 0xE0 | ((lba >> 24) & 0x0F));
+    outPortB(ATA_REG_DRIVE_SEL, 0xE0 | ((lba >> 24) & 0x0F));
     ata_io_delay();
     
-    outPortB(ATA_SECTOR_CNT, 1);
-    outPortB(ATA_LBA_LOW,  (uint8_t)lba);
-    outPortB(ATA_LBA_MID,  (uint8_t)(lba >> 8));
-    outPortB(ATA_LBA_HIGH, (uint8_t)(lba >> 16));
+    outPortB(ATA_REG_SECTOR_CNT, 1);
+    outPortB(ATA_REG_LBA_LOW,  (uint8_t)lba);
+    outPortB(ATA_REG_LBA_MID,  (uint8_t)(lba >> 8));
+    outPortB(ATA_REG_LBA_HIGH, (uint8_t)(lba >> 16));
     
-    outPortB(ATA_COMMAND, ATA_CMD_WRITE);
+    outPortB(ATA_REG_COMMAND, ATA_CMD_WRITE);
     
-    // CRITICAL: Must wait for the drive cache to open up *after* the command is sent
     ata_wait_ready();
     ata_wait_drq();
 
+    // CORRECT: Stream 256 words using 16-bit OUT instructions
     uint16_t* buf16 = (uint16_t*)buffer;
     for (int i = 0; i < 256; i++) {
-        outPortB(ATA_DATA, (uint8_t)(buf16[i] & 0xFF));
-        outPortB(ATA_DATA, (uint8_t)(buf16[i] >> 8));
+        outPortL(ATA_REG_DATA, buf16[i]); // Must be a 16-bit writing primitive
     }
     
-    // Flush cache to commit data to persistent storage media
-    outPortB(ATA_COMMAND, 0xE7);
+    outPortB(ATA_REG_COMMAND, 0xE7); // Cache Flush
     ata_wait_ready();
 }
 
-uint32_t ata_vfs_read(vfs_node_t* node, uint32_t offset, uint32_t size, uint8_t* buffer) {
-    uint32_t target_sector = offset / 512;
-    uint8_t* sector_scratch = (uint8_t*)kmalloc(512);
-    
-    ata_read_sector(target_sector, sector_scratch);
-    
-    uint32_t sector_offset = offset % 512;
-    memcpy(buffer, sector_scratch + sector_offset, size);
-    return size;
-}
-
-uint32_t ata_vfs_write(vfs_node_t* node, uint32_t offset, uint32_t size, uint8_t* buffer) {
-    uint32_t target_sector = offset / 512;
-    uint32_t sector_offset = offset % 512;
+// 5. Complete, Boundary-Safe VFS Read Integration
+uint32_t ata_vfs_read(struct vfs_node* node, uint32_t offset, uint32_t size, uint8_t* buffer) {
+    uint32_t bytes_read = 0;
     uint8_t* sector_scratch = (uint8_t*)kmalloc(512);
 
-    if (size < 512) {
+    while (bytes_read < size) {
+        uint32_t current_offset = offset + bytes_read;
+        uint32_t target_sector = current_offset / 512;
+        uint32_t sector_offset = current_offset % 512;
+        
         ata_read_sector(target_sector, sector_scratch);
+        
+        uint32_t chunk_size = 512 - sector_offset;
+        if (chunk_size > (size - bytes_read)) {
+            chunk_size = size - bytes_read;
+        }
+
+        memcpy(buffer + bytes_read, sector_scratch + sector_offset, chunk_size);
+        bytes_read += chunk_size;
     }
 
-    memcpy(sector_scratch + sector_offset, buffer, size);
-    ata_write_sector(target_sector, sector_scratch);
-    return size;
+    // kfree(sector_scratch);
+    return bytes_read;
 }
 
-void init_ata(void) {
-    printf("Initializing ATA Hard Disk Driver...\n");
+// 6. Complete, Boundary-Safe VFS Write Integration
+uint32_t ata_vfs_write(struct vfs_node* node, uint32_t offset, uint32_t size, uint8_t* buffer) {
+    uint32_t bytes_written = 0;
+    uint8_t* sector_scratch = (uint8_t*)kmalloc(512);
+
+    while (bytes_written < size) {
+        uint32_t current_offset = offset + bytes_written;
+        uint32_t target_sector = current_offset / 512;
+        uint32_t sector_offset = current_offset % 512;
+        
+        uint32_t chunk_size = 512 - sector_offset;
+        if (chunk_size > (size - bytes_written)) {
+            chunk_size = size - bytes_written;
+        }
+
+        // If performing partial sector writes, read modified baseline state first
+        if (chunk_size < 512) {
+            ata_read_sector(target_sector, sector_scratch);
+        }
+
+        memcpy(sector_scratch + sector_offset, buffer + bytes_written, chunk_size);
+        ata_write_sector(target_sector, sector_scratch);
+        
+        bytes_written += chunk_size;
+    }
+
+    // kfree(sector_scratch);
+    return bytes_written;
+}
+
+// 7. Dynamic Initializer 
+void init_ata(uint16_t dynamic_io_port) {
+    ata_base_io = dynamic_io_port;
+    
+    // Auto-calculate matching legacy Control registers 
+    if (ata_base_io == 0x1F0) ata_base_ctrl = 0x3F6;
+    else if (ata_base_io == 0x170) ata_base_ctrl = 0x376;
+    else ata_base_ctrl = dynamic_io_port + 0x206; // Standard PCI offset projection fallback
+
+    printf("ATA Controller initializing on dynamic hardware port: 0x%x (Ctrl: 0x%x)\n", ata_base_io, ata_base_ctrl);
     
     ata_device_node = (vfs_node_t*)kmalloc(sizeof(vfs_node_t));
     memset(ata_device_node, 0, sizeof(vfs_node_t));

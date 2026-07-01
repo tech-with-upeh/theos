@@ -14,6 +14,7 @@
 #include "initrd.h"
 #include "pci.h"
 #include "ata.h"
+#include "customfs.h"
 
 static inline void asm_enable_interrupts() {
     __asm__ volatile("sti");
@@ -57,23 +58,32 @@ void kmain(uint32_t magic, struct multiboot_info* bootInfo){
     kmallocInit(0x1000);
     init_multitasking();
     print("Memory allocation done!\n");
-
+    // 1. Scan the PCI Bus FIRST to register the driver with the correct channel
+        // 1. Scan the PCI Bus to map hardware drivers
     pci_scan_bus();
-    init_ata(); 
 
-    vfs_node_t* hd = ata_get_vfs_node();
+    // 2. Load custom filesystem operations onto storage media
+    if (ata_get_vfs_node() != NULL) {
+        init_customfs();
 
-    // 1. Prepare data chunks
-    uint8_t write_payload[13] = "OSDev Rocks!";
-    uint8_t read_verify[13] = {0}; // +1 for null terminator
+        // Check current drive directory table states right out of the gate
+        customfs_list_files();
 
-    // 2. Commit payload to offset address 0
-    vfs_write(hd, 0, 12, write_payload);
-    printf("Disk write committed!\n");
+        // Create trial sample files AND standard folders into index configurations
+        customfs_create_file("notes.txt", 1);
+        customfs_create_dir("bin");
+        customfs_create_dir("documents");
 
-    // 3. Clear data and read it back from disk to verify
-    vfs_read(hd, 0, 13, read_verify);
-    printf("Disk read verification value: %s\n", (char*)read_verify);
+        // Print directory mapping output indexes again to verify they are registered!
+        customfs_list_files();
+    } else {
+        printf("Hardware Warning: Cannot initialize CustomFS. ATA device missing.\n");
+    }
+
+
+
+    printf("Kernel initialization complete. Entering idle loop...\n");
+
     // --- PASS THE HIGHLY ACCURATE PHYSICAL EXTRACTS ---
     initrd_init(tar_start, tar_end);
 
